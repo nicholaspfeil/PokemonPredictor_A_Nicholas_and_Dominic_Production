@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pokémon Predictor — forecast where card prices are heading</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper:#FBF9F4; --surface:#FFFFFF; --line:#E9E3D6; --line-2:#DAD2C1;
+    --ink:#23201B; --ink-soft:#6E685C;
+    --rise:#2E7D57; --fall:#C0492F; --flat:#8A8474;
+    --pokeball:#EE1515; --pokeball-dark:#B71212; --sky:#3D7CC9; --gold:#B8923D;
+    --t-fire:#F0803C; --t-water:#4B9BE0; --t-grass:#5CB85C; --t-lightning:#F0BE2A;
+    --t-psychic:#E86FA8; --t-fighting:#C4643B; --t-darkness:#4E4858; --t-metal:#8A98A8;
+    --t-dragon:#C9A227; --t-fairy:#EF9BC4; --t-colorless:#B7AFA2; --t-default:#C4BCAD;
+  }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; color:var(--ink); font-family:'Inter',sans-serif; -webkit-font-smoothing:antialiased;
+    background:var(--paper);
+    /* subtle binder-dot texture */
+    background-image:radial-gradient(var(--line) 1px, transparent 1px);
+    background-size:22px 22px; }
+
+  /* ---- Hero with floating pokeball motifs ---- */
+  .hero { position:relative; overflow:hidden; text-align:center; padding:48px 24px 30px;
+    border-bottom:2px solid var(--ink);
+    background:radial-gradient(circle at 50% -30%, #FFF3DE 0%, rgba(251,249,244,0) 65%), var(--paper); }
+  .hero .ball { position:absolute; border-radius:50%; opacity:.10; pointer-events:none;
+    background:linear-gradient(#EE1515 0 50%, #fff 50% 100%); border:4px solid var(--ink); }
+  .hero .ball::after{ content:""; position:absolute; top:50%; left:50%; width:22%; height:22%; background:#fff; border:4px solid var(--ink); border-radius:50%; transform:translate(-50%,-50%); }
+  .b1{ width:120px; height:120px; top:-30px; left:-30px; transform:rotate(-12deg); }
+  .b2{ width:80px; height:80px; top:20px; right:6%; }
+  .b3{ width:54px; height:54px; bottom:-14px; left:16%; opacity:.07; }
+
+  .pokemark { width:44px; height:44px; border-radius:50%; margin:0 auto 12px; position:relative; z-index:1;
+    background:linear-gradient(var(--pokeball) 0 50%, #fff 50% 100%); border:3px solid var(--ink); box-shadow:0 3px 0 rgba(0,0,0,.1); }
+  .pokemark::after { content:""; position:absolute; top:50%; left:50%; width:13px; height:13px; background:#fff; border:3px solid var(--ink); border-radius:50%; transform:translate(-50%,-50%); }
+
+  .wordmark { position:relative; z-index:1; font-family:'Fraunces',serif; font-weight:900;
+    font-size:clamp(2.2rem,5.5vw,3.6rem); line-height:.95; letter-spacing:-.01em; }
+  .wordmark b { color:var(--pokeball); }
+  .dek { position:relative; z-index:1; font-size:1.02rem; color:var(--ink-soft); margin:12px auto 0; max-width:58ch; line-height:1.5; }
+
+  /* ---- Stat strip ---- */
+  .stats { max-width:1000px; margin:0 auto; padding:16px 24px; display:flex; flex-wrap:wrap; gap:30px; border-bottom:1px solid var(--line); background:var(--paper); }
+  .stat .n { font-family:'Fraunces',serif; font-weight:600; font-size:1.5rem; line-height:1; }
+  .stat.rise .n{color:var(--rise);} .stat.fall .n{color:var(--fall);}
+  .stat .k { font-size:.78rem; color:var(--ink-soft); margin-top:4px; }
+  .note { max-width:1000px; margin:0 auto; padding:12px 24px 0; font-size:.8rem; color:var(--ink-soft); line-height:1.5; }
+
+  /* ---- Energy-type filter row ---- */
+  .types { max-width:1000px; margin:0 auto; padding:16px 24px 4px; display:flex; flex-wrap:wrap; gap:8px; }
+  .tbtn { font-family:'Inter',sans-serif; font-weight:600; font-size:.82rem; color:var(--ink);
+    background:var(--surface); border:2px solid var(--line-2); border-radius:100px; padding:6px 14px 6px 10px; cursor:pointer; display:flex; align-items:center; gap:7px; transition:transform .1s,border-color .1s; }
+  .tbtn:hover{ transform:translateY(-1px); }
+  .tbtn .swatch{ width:12px; height:12px; border-radius:50%; background:var(--sw,var(--t-default)); border:1.5px solid rgba(0,0,0,.15); }
+  .tbtn.active{ border-color:var(--ink); background:var(--sw,var(--paper)); color:#fff; }
+  .tbtn.active .swatch{ background:#fff; }
+  .tbtn[data-type="all"].active{ background:var(--ink); color:#fff; }
+
+  /* ---- Controls ---- */
+  .controls { max-width:1000px; margin:0 auto; padding:14px 24px; display:flex; gap:12px; flex-wrap:wrap; position:sticky; top:0; z-index:5; background:var(--paper); border-bottom:1px solid var(--line); }
+  .controls input, .controls select { font-family:'Inter',sans-serif; font-size:.95rem; color:var(--ink); background:var(--surface); border:1px solid var(--line-2); padding:11px 14px; border-radius:3px; }
+  .controls input { flex:1; min-width:220px; }
+  .controls input:focus, .controls select:focus { outline:2px solid var(--sky); outline-offset:1px; }
+
+  .portfolio-btn { font-family:'Inter',sans-serif; font-size:.92rem; font-weight:700; color:#fff; background:var(--ink); border:1px solid var(--ink); padding:11px 15px; border-radius:6px; cursor:pointer; white-space:nowrap; }
+  .portfolio-btn:hover { transform:translateY(-1px); }
+  .portfolio-btn .badge { display:inline-flex; min-width:20px; height:20px; align-items:center; justify-content:center; margin-left:6px; padding:0 5px; border-radius:999px; background:var(--pokeball); color:#fff; font-size:.72rem; }
+  .portfolio-empty { text-align:center; padding:24px 10px; color:var(--ink-soft); border:2px dashed var(--line-2); border-radius:8px; }
+  .portfolio-summary { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:18px 0; }
+  .pstat { background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .pstat .label { font-size:.72rem; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; }
+  .pstat .value { font-family:'Fraunces',serif; font-size:1.35rem; font-weight:600; margin-top:3px; }
+  .portfolio-direction { border:2px solid var(--line); border-radius:8px; padding:14px; background:var(--surface); }
+  .portfolio-direction.up { border-color:var(--rise); }
+  .portfolio-direction.down { border-color:var(--fall); }
+  .portfolio-direction.flat { border-color:var(--line-2); }
+  .portfolio-item { display:grid; grid-template-columns:46px 1fr auto; gap:12px; align-items:center; padding:10px 0; border-bottom:1px solid var(--line); }
+  .portfolio-item img { width:46px; height:64px; object-fit:contain; background:#efece4; border-radius:4px; }
+  .portfolio-item:last-child { border-bottom:none; }
+  .portfolio-name { font-weight:700; font-size:.9rem; }
+  .portfolio-meta { font-size:.76rem; color:var(--ink-soft); margin-top:2px; }
+  .qty-controls { display:flex; align-items:center; gap:6px; justify-content:flex-end; margin-top:6px; }
+  .qty-controls button { width:26px; height:26px; border:1px solid var(--line-2); background:var(--surface); border-radius:4px; cursor:pointer; font-weight:700; }
+  .qty-controls button:hover { background:var(--line); }
+  .qty { min-width:24px; text-align:center; font-weight:700; }
+  .remove-link { border:none; background:none; color:var(--fall); cursor:pointer; font-size:.76rem; padding:0; margin-top:5px; }
+  .portfolio-note { font-size:.78rem; color:var(--ink-soft); line-height:1.5; margin-top:14px; }
+  .portfolio-add { display:inline-block; margin-top:16px; background:var(--ink); color:#fff; border:none; padding:10px 15px; border-radius:6px; font-weight:700; cursor:pointer; }
+  .portfolio-add:hover { transform:translateY(1px); }
+  .portfolio-added { background:var(--rise); }
+  @media (max-width:640px){
+    .portfolio-summary { grid-template-columns:1fr; }
+    .portfolio-item { grid-template-columns:40px 1fr auto; gap:9px; }
+    .portfolio-item img { width:40px; height:56px; }
+  }
+
+  main { max-width:1000px; margin:0 auto 80px; padding:0 24px; }
+  .count { font-size:.82rem; color:var(--ink-soft); padding:14px 0 8px; }
+
+  /* ---- Card rows with type edge ---- */
+  .row { display:grid; grid-template-columns:5px 44px 1fr 92px auto; align-items:center; gap:16px;
+    border-bottom:1px solid var(--line); padding:12px 8px 12px 0; cursor:pointer; transition:background .1s; }
+  .row:hover { background:var(--surface); box-shadow:inset 4px 0 0 var(--type,transparent); }
+  .typebar { width:5px; align-self:stretch; min-height:52px; border-radius:100px; background:var(--type,var(--t-default)); }
+  .row img { width:44px; height:61px; object-fit:contain; background:#efece4; border-radius:3px; }
+  .name { font-weight:600; font-size:.98rem; line-height:1.3; }
+  .meta { font-size:.8rem; color:var(--ink-soft); margin-top:2px; }
+  .typedot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--type,var(--t-default)); margin-right:5px; vertical-align:middle; }
+  .spark { width:92px; height:34px; display:block; }
+  .fore { text-align:right; min-width:130px; }
+  .chg { font-family:'Fraunces',serif; font-weight:600; font-size:1.35rem; line-height:1; }
+  .up{color:var(--rise);} .down{color:var(--fall);} .flat{color:var(--flat);}
+  .pr { font-size:.8rem; color:var(--ink-soft); margin-top:4px; }
+  .pr strong{ color:var(--ink); }
+
+  .empty { text-align:center; padding:60px 20px; color:var(--ink-soft); }
+  .empty a{ color:var(--sky); cursor:pointer; }
+
+  footer { max-width:900px; margin:0 auto; padding:24px; text-align:center; font-size:.78rem; color:var(--ink-soft); line-height:1.55; border-top:1px solid var(--line); }
+
+  /* ---- Detail modal ---- */
+  .overlay { position:fixed; inset:0; background:rgba(35,32,27,.5); display:none; align-items:center; justify-content:center; padding:24px; z-index:50; }
+  .overlay.open { display:flex; }
+  .panel { background:var(--paper); border:3px solid var(--ink); border-radius:10px; max-width:640px; width:100%; max-height:88vh; overflow-y:auto; padding:26px; position:relative; box-shadow:0 10px 0 rgba(0,0,0,.1); }
+  .panel-close { position:absolute; top:14px; right:16px; background:none; border:none; font-size:1.7rem; line-height:1; color:var(--ink-soft); cursor:pointer; }
+  .panel-close:hover{ color:var(--ink); }
+  .panel-head { display:flex; gap:24px; align-items:flex-start; }
+  .panel-head .imgwrap { padding:9px; border-radius:12px; background:var(--type,var(--t-default)); flex-shrink:0; box-shadow:0 0 0 3px rgba(255,255,255,.6) inset; }
+  /* larger card image + zoom lens */
+  .zoom { position:relative; width:220px; height:307px; overflow:hidden; border-radius:7px; background:#fff; cursor:zoom-in; }
+  .zoom img { width:100%; height:100%; object-fit:contain; display:block; transition:transform .08s ease-out; transform-origin:center center; }
+  .zoom:hover img { transform:scale(2.4); }
+  .panel-title { font-family:'Fraunces',serif; font-weight:600; font-size:1.55rem; line-height:1.1; }
+  .panel-meta { font-size:.9rem; color:var(--ink-soft); margin-top:6px; }
+  .panel-chg { font-family:'Fraunces',serif; font-weight:600; font-size:2rem; margin-top:14px; }
+  .panel-pr { font-size:.95rem; color:var(--ink-soft); margin-top:2px; }
+  .panel-pr strong{ color:var(--ink); }
+  .bigchart { width:100%; height:120px; margin:20px 0 6px; }
+  .chart-label { font-size:.78rem; color:var(--ink-soft); }
+  .buy { display:inline-block; margin-top:18px; background:var(--pokeball); color:#fff; text-decoration:none; padding:11px 22px; border-radius:6px; font-weight:700; box-shadow:0 3px 0 var(--pokeball-dark); }
+  .buy:hover{ transform:translateY(1px); box-shadow:0 2px 0 var(--pokeball-dark); }
+
+  @media (max-width:640px){
+    .row{ grid-template-columns:5px 40px 1fr auto; } .spark{ display:none; } .fore{ min-width:0; }
+    .panel-head{ flex-direction:column; } .zoom{ width:180px; height:251px; }
+    .stats{ gap:20px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <span class="ball b1"></span><span class="ball b2"></span><span class="ball b3"></span>
+  <div class="pokemark"></div>
+  <div class="wordmark">Pokémon <b>Predictor</b></div>
+  <p class="dek">Where's your collection heading? A machine-learning model reads months of real market history and forecasts where each card's value is going over the next two months.</p>
+</div>
+
+<div class="stats" id="stats"></div>
+<p class="note" id="accuracyNote"></p>
+
+<div class="types" id="typeFilter"></div>
+
+<div class="controls">
+  <input type="text" id="search" placeholder="Search a card or set — Charizard, Prismatic, Pikachu…">
+  <select id="sort">
+    <option value="gain">Rising the most</option>
+    <option value="loss">Falling the most</option>
+    <option value="price_high">Most valuable</option>
+    <option value="price_low">Least valuable</option>
+  </select>
+  <button class="portfolio-btn" onclick="openPortfolio()">My Portfolio <span class="badge" id="portfolioCount">0</span></button>
+</div>
+
+<main>
+  <div class="count" id="count"></div>
+  <div id="rows"></div>
+</main>
+
+<footer>
+  A student machine-learning project — forecasts are offered for curiosity, not investing advice or any guarantee of a card's future value. Prices are genuinely hard to predict, and hype or reprints can move a card in ways no model foresees.
+</footer>
+
+<div class="overlay" id="overlay"><div class="panel" id="panel"></div></div>
+
+<div class="overlay" id="portfolioOverlay"><div class="panel" id="portfolioPanel">
+  <button class="panel-close" onclick="closePortfolio()" aria-label="Close">×</button>
+  <div class="panel-title">My Pokémon Portfolio</div>
+  <div class="panel-meta">Your selected cards, weighted by quantity, using the site's existing ~60-day forecasts.</div>
+  <div id="portfolioContent"></div>
+</div></div>
+
+<script>
+  const TYPES = ["Fire","Water","Grass","Lightning","Psychic","Fighting","Darkness","Metal","Dragon","Fairy","Colorless"];
+  const TYPE_COLORS = { Fire:"var(--t-fire)",Water:"var(--t-water)",Grass:"var(--t-grass)",Lightning:"var(--t-lightning)",Electric:"var(--t-lightning)",Psychic:"var(--t-psychic)",Fighting:"var(--t-fighting)",Darkness:"var(--t-darkness)",Dark:"var(--t-darkness)",Metal:"var(--t-metal)",Steel:"var(--t-metal)",Dragon:"var(--t-dragon)",Fairy:"var(--t-fairy)",Colorless:"var(--t-colorless)",Normal:"var(--t-colorless)" };
+  function typeColor(t){ return (t && TYPE_COLORS[t]) || "var(--t-default)"; }
+
+  // ---- Stable card identity ----
+  // A card's name is NOT unique: multiple sets can contain "Charizard".
+  // Prefer a dataset-provided unique ID/card number. If none exists, build
+  // a stable fallback from identifying fields rather than using the name alone.
+  function cardId(c){
+    if (!c) return null;
+    const supplied = c.id ?? c.card_id ?? c.cardId ?? c.product_id ?? c.productId ?? c.uuid;
+    if (supplied !== undefined && supplied !== null && String(supplied).trim() !== "") {
+      return String(supplied);
+    }
+    const parts = [
+      c.set || "",
+      c.card_number ?? c.cardNumber ?? c.number ?? "",
+      c.name || "",
+      c.rarity || "",
+      c.current_price ?? ""
+    ];
+    return parts.map(v => String(v).trim().toLowerCase()).join("|");
+  }
+
+  function findCardById(id){
+    return DATA.predictions.find(c => cardId(c) === String(id)) || null;
+  }
+
+  const SAMPLE={summary:{total_cards:1536,avg_change:-2.7,predicted_rises:213,predicted_drops:643},
+    predictions:[
+      {name:"Dragapult ex",set:"Prismatic Evolutions",rarity:"Double Rare",type:"Dragon",image:"",current_price:2.38,predicted_change_pct:29.6,predicted_price:3.08,spark:[1.9,2,2.1,2,2.2,2.3,2.38],full_history:[1.8,1.9,2,2.1,2,2.2,2.3,2.38]},
+      {name:"Meowth ex",set:"Perfect Order",rarity:"Ultra Rare",type:"Colorless",image:"",current_price:12.22,predicted_change_pct:-23.9,predicted_price:9.3,spark:[18,17,16,15,13,12.5,12.22],full_history:[19,18,17,16,15,13,12.22]},
+      {name:"Gardevoir ex",set:"Paldea Evolved",rarity:"Double Rare",type:"Psychic",image:"",current_price:6.1,predicted_change_pct:4.2,predicted_price:6.36,spark:[5.8,6,5.9,6.1,6,6.1,6.1],full_history:[5.5,5.8,6,5.9,6.1,6,6.1]},
+      {name:"Charizard ex",set:"Obsidian Flames",rarity:"Double Rare",type:"Fire",image:"",current_price:18.5,predicted_change_pct:2.1,predicted_price:18.89,spark:[18,18.4,18.1,18.6,18.3,18.5,18.5],full_history:[17,18,18.4,18.1,18.6,18.3,18.5]}
+    ]};
+
+  let DATA={summary:{},predictions:[]}, CURRENT_LIST=[], activeType="all";
+
+  async function load(){
+    try{ const r=await fetch("card_predictions.json"); if(!r.ok)throw 0;
+      const j=await r.json(); DATA=Array.isArray(j)?{summary:{},predictions:j}:j;
+    }catch(e){ console.warn("sample",e); DATA=SAMPLE; }
+    paintStats(); paintTypeFilter(); render(); updatePortfolioBadge();
+  }
+
+  function paintStats(){
+    const s=DATA.summary||{};
+    document.getElementById("stats").innerHTML=[
+      {n:(s.total_cards??DATA.predictions.length).toLocaleString(),k:"cards tracked",c:""},
+      {n:(s.predicted_rises??"—"),k:"forecast to rise",c:"rise"},
+      {n:(s.predicted_drops??"—"),k:"forecast to fall",c:"fall"},
+      {n:((s.avg_change>=0?"+":"")+(s.avg_change??0)+"%"),k:"average forecast",c:""}
+    ].map(i=>`<div class="stat ${i.c}"><div class="n">${i.n}</div><div class="k">${i.k}</div></div>`).join("");
+  }
+
+  function paintTypeFilter(){
+    // only show types that actually appear in the data
+    const present=new Set(DATA.predictions.map(c=>c.type).filter(Boolean));
+    const avail=TYPES.filter(t=>present.has(t));
+    const el=document.getElementById("typeFilter");
+    if(!avail.length){ el.style.display="none"; return; }
+    const btn=(t,label)=>`<button class="tbtn ${t===activeType?"active":""}" data-type="${t}" style="--sw:${t==="all"?"var(--ink)":typeColor(t)};"><span class="swatch"></span>${label}</button>`;
+    el.innerHTML=btn("all","All types")+avail.map(t=>btn(t,t)).join("");
+    el.querySelectorAll(".tbtn").forEach(b=>b.addEventListener("click",()=>{ activeType=b.getAttribute("data-type"); paintTypeFilter(); render(); }));
+  }
+
+  function bucket(p){ if(p>=5)return{c:"up",a:"▲"}; if(p<=-5)return{c:"down",a:"▼"}; return{c:"flat",a:"▬"}; }
+  function esc(s){ const d=document.createElement("div"); d.textContent=s; return d.innerHTML; }
+  function spark(v,cls){ if(!v||v.length<2)return""; const w=92,h=34,p=3,mn=Math.min(...v),mx=Math.max(...v),r=(mx-mn)||1;
+    const pts=v.map((x,i)=>`${(p+i/(v.length-1)*(w-2*p)).toFixed(1)},${(h-p-(x-mn)/r*(h-2*p)).toFixed(1)}`).join(" ");
+    const st=cls==="up"?"var(--rise)":cls==="down"?"var(--fall)":"var(--flat)";
+    return `<svg class="spark" viewBox="0 0 ${w} ${h}"><polyline points="${pts}" fill="none" stroke="${st}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`; }
+
+  function rowHtml(c,idx){
+    const b=bucket(c.predicted_change_pct), sign=c.predicted_change_pct>0?"+":"", col=typeColor(c.type);
+    const img=c.image?`<img src="${c.image}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">`:`<div style="width:44px;height:61px;background:#efece4;border-radius:3px;"></div>`;
+    return `<div class="row" data-idx="${idx}" style="--type:${col};">
+      <div class="typebar"></div>${img}
+      <div><div class="name">${esc(c.name)}</div>
+        <div class="meta">${c.type?`<span class="typedot"></span>`:""}${esc(c.set)}${c.rarity?` · ${esc(c.rarity)}`:""}</div></div>
+      ${spark(c.spark,b.c)}
+      <div class="fore"><div class="chg ${b.c}">${b.a} ${sign}${c.predicted_change_pct.toFixed(1)}%</div>
+        <div class="pr">$${c.current_price.toFixed(2)} → <strong>$${c.predicted_price.toFixed(2)}</strong></div></div>
+    </div>`;
+  }
+
+  function bigChart(v){ if(!v||v.length<2)return""; const w=580,h=120,p=8,mn=Math.min(...v),mx=Math.max(...v),r=(mx-mn)||1;
+    const pts=v.map((x,i)=>`${(p+i/(v.length-1)*(w-2*p)).toFixed(1)},${(h-p-(x-mn)/r*(h-2*p)).toFixed(1)}`).join(" ");
+    return `<svg class="bigchart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none"><polygon points="${p},${h-p} ${pts} ${w-p},${h-p}" fill="var(--sky)" opacity="0.1"/><polyline points="${pts}" fill="none" stroke="var(--sky)" stroke-width="1.8" stroke-linejoin="round"/></svg>`; }
+
+  function openPanel(c){
+    const b=bucket(c.predicted_change_pct), sign=c.predicted_change_pct>0?"+":"", col=typeColor(c.type);
+    const img=c.image_large||c.image;
+    const imgHtml=img?`<div class="imgwrap"><div class="zoom" id="zoomBox"><img src="${img}" alt="${esc(c.name)}" id="zoomImg" onerror="this.closest('.imgwrap').style.display='none'"></div></div>`:"";
+    const buy=c.tcgplayer_url?`<a class="buy" href="${c.tcgplayer_url}" target="_blank" rel="noopener">View on TCGplayer</a>`:`<a class="buy" href="https://www.tcgplayer.com/search/pokemon/product?q=${encodeURIComponent(c.name)}" target="_blank" rel="noopener">Find on TCGplayer</a>`;
+    document.getElementById("panel").innerHTML=`
+      <button class="panel-close" onclick="closePanel()" aria-label="Close">×</button>
+      <div class="panel-head" style="--type:${col};">${imgHtml}
+        <div><div class="panel-title">${esc(c.name)}</div>
+          <div class="panel-meta">${c.type?esc(c.type)+" · ":""}${esc(c.set)}${c.rarity?" · "+esc(c.rarity):""}</div>
+          <div class="panel-chg ${b.c}">${b.a} ${sign}${c.predicted_change_pct.toFixed(1)}%</div>
+          <div class="panel-pr">Now $${c.current_price.toFixed(2)} → forecast <strong>$${c.predicted_price.toFixed(2)}</strong> in ~60 days</div>
+          <button class="portfolio-add" id="portfolioAddBtn" onclick="togglePortfolioCard(${JSON.stringify(cardId(c)).replace(/"/g,'&quot;')})">＋ Add to portfolio</button>
+        </div></div>
+      <div class="chart-label">Price history (recent months)</div>${bigChart(c.full_history||c.spark)}
+      <div id="dealsSection" style="margin-top:20px;">
+        <button class="buy" style="background:var(--sky);box-shadow:0 3px 0 #2b5c96;" onclick="loadDeals(${JSON.stringify(c.name).replace(/"/g,'&quot;')}, ${c.current_price})">Find live eBay deals</button>
+        <div id="dealsResults" style="margin-top:14px;"></div>
+      </div>
+      ${buy}`;
+    document.getElementById("overlay").classList.add("open");
+    refreshPortfolioButton(cardId(c));
+    // cursor-following zoom: the image magnifies toward wherever you hover
+    const zb = document.getElementById("zoomBox");
+    const zi = document.getElementById("zoomImg");
+    if (zb && zi) {
+      zb.addEventListener("mousemove", (e) => {
+        const r = zb.getBoundingClientRect();
+        const x = ((e.clientX - r.left) / r.width) * 100;
+        const y = ((e.clientY - r.top) / r.height) * 100;
+        zi.style.transformOrigin = `${x}% ${y}%`;
+      });
+      zb.addEventListener("mouseleave", () => {
+        zi.style.transformOrigin = "center center";
+      });
+    }
+  }
+  function closePanel(){ document.getElementById("overlay").classList.remove("open"); }
+
+  // ---- Live eBay deals via our own serverless function (keys stay server-side) ----
+  async function loadDeals(cardName, predictedValue){
+    const box = document.getElementById("dealsResults");
+    box.innerHTML = `<div style="color:var(--ink-soft);font-size:.9rem;">Searching eBay…</div>`;
+    try {
+      const url = `/api/deals?q=${encodeURIComponent(cardName)}&value=${encodeURIComponent(predictedValue)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error("request failed");
+      const data = await res.json();
+      const deals = data.deals || [];
+      if (!deals.length) {
+        box.innerHTML = `<div style="color:var(--ink-soft);font-size:.9rem;">No current eBay listings found for this card.</div>`;
+        return;
+      }
+      box.innerHTML = deals.map(d => {
+        const disc = d.discount_percent;
+        const tag = disc == null ? "" :
+          disc > 0 ? `<span style="color:var(--rise);font-weight:700;">${disc.toFixed(1)}% below value</span>`
+                   : `<span style="color:var(--fall);font-weight:700;">${Math.abs(disc).toFixed(1)}% above value</span>`;
+        return `<a href="${d.url}" target="_blank" rel="noopener" style="display:flex;gap:12px;align-items:center;text-decoration:none;color:var(--ink);border:2px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px;">
+          ${d.image?`<img src="${d.image}" style="width:40px;height:56px;object-fit:contain;background:#efece4;border-radius:4px;">`:""}
+          <div style="flex:1;min-width:0;">
+            <div style="font-weight:600;font-size:.88rem;line-height:1.25;">${esc(d.title).slice(0,70)}</div>
+            <div style="font-size:.82rem;color:var(--ink-soft);margin-top:2px;">$${d.total_price.toFixed(2)} · ${esc(d.condition)} · ${tag}</div>
+          </div>
+        </a>`;
+      }).join("");
+    } catch(e) {
+      box.innerHTML = `<div style="color:var(--fall);font-size:.9rem;">Couldn't load live deals right now. Try again in a moment.</div>`;
+    }
+  }
+  window.loadDeals = loadDeals;
+
+
+  // ---- Portfolio feature ----
+  // The portfolio is saved in the browser so it survives page refreshes.
+  // Each selected card stores its unique ID and quantity. Forecasts come from the
+  // same card-level predictions already displayed on the site.
+  const PORTFOLIO_KEY = "pokemonPredictorPortfolio";
+
+  function getPortfolio(){
+    try {
+      const saved = JSON.parse(localStorage.getItem(PORTFOLIO_KEY) || "{}");
+      if (!saved || typeof saved !== "object") return {};
+
+      // Migrate portfolios saved by the old name-only implementation.
+      // If a name is ambiguous (e.g. multiple Charizards), keep the first
+      // matching card for backwards compatibility; newly added cards use IDs.
+      const migrated = {};
+      let changed = false;
+
+      Object.entries(saved).forEach(([key, info]) => {
+        if (DATA.predictions.some(c => cardId(c) === String(key))) {
+          migrated[String(key)] = info;
+          return;
+        }
+
+        const matches = DATA.predictions.filter(c => c.name === key);
+        if (matches.length) {
+          const newKey = cardId(matches[0]);
+          if (!migrated[newKey]) migrated[newKey] = info;
+          changed = true;
+        }
+      });
+
+      if (changed) {
+        localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(migrated));
+      }
+      return migrated;
+    } catch(e) { return {}; }
+  }
+
+  function savePortfolio(p){
+    localStorage.setItem(PORTFOLIO_KEY, JSON.stringify(p));
+    updatePortfolioBadge();
+  }
+
+  function updatePortfolioBadge(){
+    const p = getPortfolio();
+    const count = Object.values(p).reduce((sum, item) => sum + (Number(item.qty) || 0), 0);
+    const badge = document.getElementById("portfolioCount");
+    if (badge) badge.textContent = count;
+  }
+
+  function togglePortfolioCard(id){
+    const key = String(id);
+    const p = getPortfolio();
+    if (p[key]) {
+      delete p[key];
+    } else {
+      const c = findCardById(key);
+      if (!c) return;
+      p[key] = { qty: 1 };
+    }
+    savePortfolio(p);
+    refreshPortfolioButton(key);
+  }
+
+  function refreshPortfolioButton(id){
+    const btn = document.getElementById("portfolioAddBtn");
+    if (!btn) return;
+    const p = getPortfolio();
+    if (p[String(id)]) {
+      btn.textContent = "✓ In portfolio — Remove";
+      btn.classList.add("portfolio-added");
+    } else {
+      btn.textContent = "＋ Add to portfolio";
+      btn.classList.remove("portfolio-added");
+    }
+  }
+
+  function changeQuantity(id, delta){
+    const key = String(id);
+    const p = getPortfolio();
+    if (!p[key]) return;
+    p[key].qty = Math.max(0, (Number(p[key].qty) || 1) + delta);
+    if (p[key].qty === 0) delete p[key];
+    savePortfolio(p);
+    renderPortfolio();
+  }
+
+  function removeFromPortfolio(id){
+    const key = String(id);
+    const p = getPortfolio();
+    delete p[key];
+    savePortfolio(p);
+    renderPortfolio();
+    refreshPortfolioButton(key);
+  }
+
+  function portfolioStats(){
+    const p = getPortfolio();
+    const entries = Object.entries(p).map(([id, info]) => {
+      const c = findCardById(id);
+      if (!c) return null;
+      const qty = Math.max(1, Number(info.qty) || 1);
+      return {
+        card:c,
+        qty,
+        currentValue:c.current_price * qty,
+        forecastValue:c.predicted_price * qty,
+        changeValue:(c.predicted_price - c.current_price) * qty
+      };
+    }).filter(Boolean);
+
+    const currentTotal = entries.reduce((s,x)=>s+x.currentValue,0);
+    const forecastTotal = entries.reduce((s,x)=>s+x.forecastValue,0);
+    const changeValue = forecastTotal - currentTotal;
+    const changePct = currentTotal ? (changeValue/currentTotal)*100 : 0;
+    return {entries, currentTotal, forecastTotal, changeValue, changePct};
+  }
+
+  function renderPortfolio(){
+    const box = document.getElementById("portfolioContent");
+    if (!box) return;
+    const stats = portfolioStats();
+
+    if (!stats.entries.length){
+      box.innerHTML = `<div class="portfolio-empty">Your portfolio is empty.<br>Select a card, open its details, and choose <strong>＋ Add to portfolio</strong>.</div>`;
+      updatePortfolioBadge();
+      return;
+    }
+
+    let directionClass = "flat", arrow = "▬", label = "roughly flat";
+    if (stats.changePct >= 1) { directionClass="up"; arrow="▲"; label="forecast to rise"; }
+    else if (stats.changePct <= -1) { directionClass="down"; arrow="▼"; label="forecast to fall"; }
+
+    const itemHtml = stats.entries.map(x => {
+      const c=x.card;
+      const delta=((c.predicted_price-c.current_price)/c.current_price)*100;
+      const sign=delta>0?"+":"";
+      const img=c.image ? `<img src="${c.image}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">` : `<div style="width:46px;height:64px;background:#efece4;border-radius:4px;"></div>`;
+      return `<div class="portfolio-item">
+        ${img}
+        <div>
+          <div class="portfolio-name">${esc(c.name)}</div>
+          <div class="portfolio-meta">${esc(c.set||"")} · ${c.card_number || c.cardNumber || c.number ? " #" + esc(c.card_number ?? c.cardNumber ?? c.number) + " ·" : ""} ${x.qty} cop${x.qty===1?"y":"ies"} · $${c.current_price.toFixed(2)} → $${c.predicted_price.toFixed(2)}</div>
+          <button class="remove-link" onclick="removeFromPortfolio(${JSON.stringify(cardId(c)).replace(/"/g,'&quot;')})">Remove</button>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-family:'Fraunces',serif;font-weight:600;">${sign}${delta.toFixed(1)}%</div>
+          <div class="qty-controls">
+            <button onclick="changeQuantity(${JSON.stringify(cardId(c)).replace(/"/g,'&quot;')}, -1)">−</button>
+            <span class="qty">${x.qty}</span>
+            <button onclick="changeQuantity(${JSON.stringify(cardId(c)).replace(/"/g,'&quot;')}, 1)">+</button>
+          </div>
+        </div>
+      </div>`;
+    }).join("");
+
+    box.innerHTML = `
+      <div class="portfolio-summary">
+        <div class="pstat"><div class="label">Current portfolio</div><div class="value">$${stats.currentTotal.toFixed(2)}</div></div>
+        <div class="pstat"><div class="label">60-day forecast</div><div class="value">$${stats.forecastTotal.toFixed(2)}</div></div>
+        <div class="pstat"><div class="label">Forecast change</div><div class="value ${directionClass==='up'?'up':directionClass==='down'?'down':'flat'}">${arrow} ${stats.changePct>=0?"+":""}${stats.changePct.toFixed(1)}%</div></div>
+      </div>
+      <div class="portfolio-direction ${directionClass}">
+        <strong>${arrow} Portfolio is ${label}.</strong>
+        <div style="font-size:.83rem;color:var(--ink-soft);margin-top:4px;">Projected dollar change: ${stats.changeValue>=0?"+":""}$${stats.changeValue.toFixed(2)} over the site's forecast horizon.</div>
+      </div>
+      <div style="margin-top:18px;">${itemHtml}</div>
+      <div class="portfolio-note">This is a weighted aggregation of the individual card forecasts already produced by the model. It does not train a separate portfolio model. A portfolio can rise even when some individual cards fall, and vice versa.</div>
+    `;
+    updatePortfolioBadge();
+  }
+
+  function openPortfolio(){
+    renderPortfolio();
+    document.getElementById("portfolioOverlay").classList.add("open");
+  }
+
+  function closePortfolio(){
+    document.getElementById("portfolioOverlay").classList.remove("open");
+  }
+
+  window.openPortfolio=openPortfolio;
+  window.closePortfolio=closePortfolio;
+  window.togglePortfolioCard=togglePortfolioCard;
+  window.changeQuantity=changeQuantity;
+  window.removeFromPortfolio=removeFromPortfolio;
+
+  function render(){
+    const term=document.getElementById("search").value.toLowerCase(), sortBy=document.getElementById("sort").value;
+    let list=DATA.predictions.filter(c=>(c.name.toLowerCase().includes(term)||(c.set||"").toLowerCase().includes(term)) && (activeType==="all"||c.type===activeType));
+    if(sortBy==="gain")list.sort((a,b)=>b.predicted_change_pct-a.predicted_change_pct);
+    else if(sortBy==="loss")list.sort((a,b)=>a.predicted_change_pct-b.predicted_change_pct);
+    else if(sortBy==="price_high")list.sort((a,b)=>b.current_price-a.current_price);
+    else if(sortBy==="price_low")list.sort((a,b)=>a.current_price-b.current_price);
+    document.getElementById("count").textContent=`${list.length.toLocaleString()} card${list.length!==1?"s":""}${activeType!=="all"?` · ${activeType}`:""}${term?` · “${term}”`:""}`;
+    const el=document.getElementById("rows");
+    if(!list.length){ el.innerHTML=`<div class="empty">No cards match. <a onclick="activeType='all';document.getElementById('search').value='';paintTypeFilter&&paintTypeFilter();render()">Reset</a> to see them all.</div>`; CURRENT_LIST=[]; return; }
+    CURRENT_LIST=list.slice(0,200);
+    el.innerHTML=CURRENT_LIST.map((c,i)=>rowHtml(c,i)).join("");
+  }
+
+  document.getElementById("rows").addEventListener("click",e=>{ const row=e.target.closest(".row"); if(!row)return; const i=parseInt(row.getAttribute("data-idx"),10); if(!isNaN(i)&&CURRENT_LIST[i])openPanel(CURRENT_LIST[i]); });
+  document.getElementById("overlay").addEventListener("click",e=>{ if(e.target.id==="overlay")closePanel(); });
+  document.getElementById("portfolioOverlay").addEventListener("click",e=>{ if(e.target.id==="portfolioOverlay")closePortfolio(); });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closePanel(); closePortfolio(); } });
+  document.getElementById("search").addEventListener("input",render);
+  document.getElementById("sort").addEventListener("change",render);
+  load();
+</script>
+</body>
+</html>
