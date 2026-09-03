@@ -136,39 +136,73 @@ function checkListing(title, card) {
   const missingName = nameTokens.find(tok => !wordPresent(t, tok));
   if (missingName) return { ok: false, reason: `title missing name word "${missingName}"` };
  
-  // Identifiers that can independently confirm this exact print. Set/number
-  // are checked word-by-word (not as one exact phrase) so different word
-  // order or punctuation in the title doesn't cause a false rejection.
+  // Identifiers checked word-by-word (not as one exact phrase) so different
+  // word order or punctuation in the title doesn't cause a false rejection.
   const setTokens = card.set
     ? normalize(card.set).split(" ").filter(w => w && !NAME_STOPWORDS.has(w))
     : [];
-  const setMatches = setTokens.length > 0 && setTokens.every(tok => wordPresent(t, tok));
+  const setNameOk = setTokens.length > 0 && setTokens.every(tok => wordPresent(t, tok));
  
   const codeVariants = [];
   if (card.setCode) {
     const code = normalize(card.setCode);
     codeVariants.push(code, code.replace(/0(\d)/, "$1")); // SV05 -> SV5 style
   }
-  const codeMatches = codeVariants.some(c => c && t.includes(c));
+  const codeOk = codeVariants.some(c => c && t.includes(c));
+  const setOk = setNameOk || codeOk;
  
   const numerator = card.number ? String(card.number).split("/")[0].trim() : "";
-  const numberMatches = numerator ? wordPresent(t, numerator) : false;
+  const numberGiven = !!numerator;
+  const numberOk = numberGiven && wordPresent(t, numerator);
  
-  const hasAnyIdentifier = setTokens.length || codeVariants.length || numerator;
-  if (!hasAnyIdentifier) {
-    // Nothing to check against beyond the name — accept, but this is the
-    // weakest guarantee we can offer for this card (see debug output).
-    return { ok: true, reason: "accepted on name only (no set/number supplied)" };
+  // Rarity words like "ace spec", "full art", "illustration rare" are what
+  // sellers actually type when they don't bother with the card number —
+  // generic words ("rare", "holo") are stripped out because they match
+  // almost every listing and wouldn't distinguish anything.
+  const RARITY_STOPWORDS = new Set(["rare", "holo", "holofoil", "card"]);
+  const rarityTokens = card.rarity
+    ? normalize(card.rarity).split(" ").filter(w => w && !RARITY_STOPWORDS.has(w))
+    : [];
+  const rarityGiven = rarityTokens.length > 0;
+  const rarityOk = rarityGiven && rarityTokens.every(tok => wordPresent(t, tok));
+ 
+  const setGiven = setTokens.length > 0 || codeVariants.some(Boolean);
+ 
+  if (!setGiven && !numberGiven && !rarityGiven) {
+    // Nothing beyond the name to check against — weakest guarantee we can
+    // offer for this card. Same-named cards from other sets/prints will
+    // slip through; there's no way around that without more card data.
+    return { ok: true, reason: "accepted on name only (no set/number/rarity supplied)" };
   }
  
-  if (setMatches) return { ok: true, reason: "matched on set name" };
-  if (codeMatches) return { ok: true, reason: "matched on set code" };
-  if (numberMatches) return { ok: true, reason: "matched on card number" };
+  // Card number is the single most specific identifier — a name+set match
+  // alone can't tell two same-set prints of the same character apart
+  // (regular vs. full art vs. secret rare), but the number can.
+  if (numberGiven) {
+    if (numberOk) return { ok: true, reason: "matched on card number" };
+    if (setOk && rarityOk) {
+      return { ok: true, reason: "number not in title, but set + rarity both confirm the print" };
+    }
+    return {
+      ok: false,
+      reason: "card number not found in title, and set/rarity alone can't confirm which print this is",
+    };
+  }
  
-  return {
-    ok: false,
-    reason: "name matched but no set/code/number confirmation found in title",
-  };
+  // No number available for this card — fall back to set, backed by rarity
+  // when we have it (rarity is what disambiguates same-set reprints here).
+  if (setOk && rarityOk) return { ok: true, reason: "matched on set + rarity" };
+  if (setOk && !rarityGiven) {
+    return { ok: true, reason: "matched on set only (no rarity/number available to narrow further)" };
+  }
+  if (setOk && rarityGiven && !rarityOk) {
+    return {
+      ok: false,
+      reason: "set matched but rarity didn't — likely a different print of the same card",
+    };
+  }
+ 
+  return { ok: false, reason: "name matched but set/rarity/number could not be confirmed in title" };
 }
  
 function scoreListing(item, predictedValue) {
