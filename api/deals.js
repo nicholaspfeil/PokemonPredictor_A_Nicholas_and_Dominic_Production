@@ -10,44 +10,34 @@
 //   set_code = set code, e.g. "SV05" (optional)
 //   number   = card number, e.g. "175/162" (optional)
 //   rarity   = card rarity (optional, currently informational only)
-//
-// WHY THIS FILE WAS REWRITTEN:
-// Card names are not unique ("Master Ball" is reused across sets and even
-// exists as non-card merchandise). The old version searched eBay using ONLY
-// the bare name, applied no category restriction, and ranked purely by
-// discount percent — so a cheap, completely wrong item could out-rank the
-// real card just by having a low price relative to the predicted value.
-// This version (1) builds a more specific query from every identifier the
-// front end already sends, (2) restricts the search to eBay's actual
-// Pokémon-singles category, and (3) verifies each listing's title against
-// the card's identity before it's even eligible to be ranked. Unverified
-// listings are dropped rather than shown — a short/empty result list is
-// preferred over a wrong one.
-
+//   debug    = "1" to also return why each candidate was kept/rejected
+//              (use this to diagnose a specific card that returns nothing)
+ 
 // --- simple in-memory token cache (persists while the function stays warm) ---
 let cachedToken = null;
 let tokenExpiresAt = 0;
-
+ 
 // eBay category: Toys & Hobbies > Collectible Card Games > Pokémon TCG >
-// "Pokémon Individual Cards". Restricting to this category alone rules out
-// other card games, sealed product, video games, and general merchandise
-// that a bare keyword search would otherwise happily return.
+// "Pokémon Individual Cards". This is a best-effort ID, not something we can
+// verify without hitting the live API — treat it as a narrowing filter we
+// fall back off of, not a hard requirement. Some real listings get
+// miscategorized by sellers anyway, so it should never be the only thing
+// standing between a card and a "no results" outcome.
 const EBAY_POKEMON_SINGLES_CATEGORY = "183454";
-
+ 
 async function getEbayToken() {
-  // reuse the token if it's still valid (avoids re-authing every request)
   if (cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken;
   }
-
-  const appId = process.env.EBAY_APP_ID;      // set in Vercel env vars
-  const certId = process.env.EBAY_CERT_ID;    // set in Vercel env vars
+ 
+  const appId = process.env.EBAY_APP_ID;
+  const certId = process.env.EBAY_CERT_ID;
   if (!appId || !certId) {
     throw new Error("Missing eBay credentials in server environment.");
   }
-
+ 
   const creds = Buffer.from(`${appId}:${certId}`).toString("base64");
-
+ 
   const res = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
     method: "POST",
     headers: {
@@ -56,70 +46,66 @@ async function getEbayToken() {
     },
     body: "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
   });
-
+ 
   if (!res.ok) {
     throw new Error(`eBay auth failed: ${res.status}`);
   }
-
+ 
   const data = await res.json();
   cachedToken = data.access_token;
-  // refresh a bit before the real expiry (data.expires_in is in seconds)
   tokenExpiresAt = Date.now() + (data.expires_in - 60) * 1000;
   return cachedToken;
 }
-
+ 
 // ---- Build a specific eBay search term from every identifier we have ----
 function buildSearchQuery(card) {
   const parts = [card.name];
   if (card.set) parts.push(card.set);
   else if (card.setCode) parts.push(card.setCode);
   if (card.number) {
-    // Sellers write the numerator inconsistently ("175", "175/162", "#175"),
-    // so search on the numerator alone rather than the full "x/y" string.
     const numerator = String(card.number).split("/")[0].trim();
     if (numerator) parts.push(numerator);
   }
   return parts.filter(Boolean).join(" ");
 }
-
-async function searchEbay(query, token) {
+ 
+// IMPORTANT: no `sort` param here — omitting it uses eBay's "best match"
+// relevance ranking. Sorting by price instead (the earlier version) pulls in
+// the 50 *cheapest* items matching loose keywords, which for a category-wide
+// search skews heavily toward off-target junk — starving the relevance
+// filter below of anything real to keep. Price ranking happens on OUR side,
+// after we know a listing is actually the right card.
+async function searchEbay(query, token, { useCategory = true } = {}) {
   const url = new URL("https://api.ebay.com/buy/browse/v1/item_summary/search");
   url.searchParams.set("q", query);
-  url.searchParams.set("category_ids", EBAY_POKEMON_SINGLES_CATEGORY);
+  if (useCategory) url.searchParams.set("category_ids", EBAY_POKEMON_SINGLES_CATEGORY);
   url.searchParams.set("limit", "50");
-  url.searchParams.set("sort", "price");
   url.searchParams.set("filter", "buyingOptions:{FIXED_PRICE}");
-
+ 
   const res = await fetch(url.toString(), {
     headers: {
       "Authorization": `Bearer ${token}`,
       "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
     },
   });
-
+ 
   if (!res.ok) {
     throw new Error(`eBay search failed: ${res.status}`);
   }
   return res.json();
 }
-
+ 
 // ---- Listing verification ----
-// A listing only becomes eligible to be ranked as a "deal" if its title
-// checks out against the card's identity. This is what actually fixes the
-// wrong-card bug — the old code trusted eBay's keyword match completely.
-
 function normalize(s) {
   return String(s || "")
     .toLowerCase()
-    .replace(/[^a-z0-9\s/]/g, " ") // strip punctuation, keep "/" for card numbers
+    .replace(/[^a-z0-9\s/]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
-
+ 
 const NAME_STOPWORDS = new Set(["the", "a", "an", "of", "and"]);
-
-// Listing types that are never the single card itself, however well the
-// keywords happen to match.
+ 
 const NON_SINGLE_CARD_TERMS = [
   "plush", "plushie", "figure", "funko", "pop!", "keychain", "key chain",
   "playmat", "play mat", "sleeve", "sleeves", "binder", "deck box",
@@ -129,98 +115,122 @@ const NON_SINGLE_CARD_TERMS = [
   "lot of", "bundle", "bulk lot", "mystery box",
   "booster box", "booster pack", "elite trainer box", " etb ",
 ];
-
-function isRelevantListing(title, card) {
+ 
+function wordPresent(text, tok) {
+  return new RegExp(`\\b${tok}\\b`).test(text);
+}
+ 
+// Returns { ok, reason } instead of a plain boolean so failures are
+// diagnosable via ?debug=1 instead of being a black box.
+function checkListing(title, card) {
   const t = ` ${normalize(title)} `;
-
-  if (NON_SINGLE_CARD_TERMS.some(term => t.includes(term))) return false;
-
-  // Every meaningful word of the card's name must appear in the title.
+ 
+  const badTerm = NON_SINGLE_CARD_TERMS.find(term => t.includes(term));
+  if (badTerm) return { ok: false, reason: `matched non-card term "${badTerm.trim()}"` };
+ 
   const nameTokens = normalize(card.name)
     .split(" ")
     .filter(w => w && !NAME_STOPWORDS.has(w));
-  if (!nameTokens.length) return false;
-  const allNameTokensPresent = nameTokens.every(tok =>
-    new RegExp(`\\b${tok}\\b`).test(t)
-  );
-  if (!allNameTokensPresent) return false;
-
-  // A shared name isn't enough on its own — "Master Ball" exists across
-  // multiple sets/rarities. Require at least one independent identifier
-  // (set name, set code, or card number) to confirm it's this exact print.
-  const identifiers = [];
-  if (card.set) identifiers.push(normalize(card.set));
+  if (!nameTokens.length) return { ok: false, reason: "card has no usable name" };
+ 
+  const missingName = nameTokens.find(tok => !wordPresent(t, tok));
+  if (missingName) return { ok: false, reason: `title missing name word "${missingName}"` };
+ 
+  // Identifiers that can independently confirm this exact print. Set/number
+  // are checked word-by-word (not as one exact phrase) so different word
+  // order or punctuation in the title doesn't cause a false rejection.
+  const setTokens = card.set
+    ? normalize(card.set).split(" ").filter(w => w && !NAME_STOPWORDS.has(w))
+    : [];
+  const setMatches = setTokens.length > 0 && setTokens.every(tok => wordPresent(t, tok));
+ 
+  const codeVariants = [];
   if (card.setCode) {
     const code = normalize(card.setCode);
-    identifiers.push(code);
-    // also accept the no-leading-zero form sellers commonly use (SV05 -> SV5)
-    identifiers.push(code.replace(/0(\d)/, "$1"));
+    codeVariants.push(code, code.replace(/0(\d)/, "$1")); // SV05 -> SV5 style
   }
-  if (card.number) {
-    const numerator = String(card.number).split("/")[0].trim();
-    if (numerator) identifiers.push(numerator);
+  const codeMatches = codeVariants.some(c => c && t.includes(c));
+ 
+  const numerator = card.number ? String(card.number).split("/")[0].trim() : "";
+  const numberMatches = numerator ? wordPresent(t, numerator) : false;
+ 
+  const hasAnyIdentifier = setTokens.length || codeVariants.length || numerator;
+  if (!hasAnyIdentifier) {
+    // Nothing to check against beyond the name — accept, but this is the
+    // weakest guarantee we can offer for this card (see debug output).
+    return { ok: true, reason: "accepted on name only (no set/number supplied)" };
   }
-
-  if (!identifiers.length) {
-    // No identifying info was supplied for this card — fall back to a
-    // name-only match rather than rejecting everything outright.
-    return true;
-  }
-
-  return identifiers.some(id => id && t.includes(id));
+ 
+  if (setMatches) return { ok: true, reason: "matched on set name" };
+  if (codeMatches) return { ok: true, reason: "matched on set code" };
+  if (numberMatches) return { ok: true, reason: "matched on card number" };
+ 
+  return {
+    ok: false,
+    reason: "name matched but no set/code/number confirmation found in title",
+  };
 }
-
-function toListings(data, predictedValue, card) {
+ 
+function scoreListing(item, predictedValue) {
+  const priceInfo = item.price || {};
+  const price = parseFloat(priceInfo.value);
+  if (!price || price <= 0) return null;
+ 
+  let shipping = 0;
+  const opts = item.shippingOptions || [];
+  if (opts.length && opts[0].shippingCost) {
+    shipping = parseFloat(opts[0].shippingCost.value || 0);
+  }
+  const total = price + shipping;
+ 
+  let discount = null;
+  if (predictedValue > 0) {
+    discount = ((predictedValue - total) / predictedValue) * 100;
+  }
+ 
+  return {
+    title: item.title,
+    price,
+    shipping,
+    total_price: parseFloat(total.toFixed(2)),
+    condition: item.condition || "—",
+    url: item.itemWebUrl,
+    image: (item.image || {}).imageUrl || "",
+    discount_percent: discount === null ? null : parseFloat(discount.toFixed(1)),
+  };
+}
+ 
+// Runs one search + verify pass. Returns { verified, debugCandidates }.
+async function runSearch(searchTerm, token, card, predictedValue, useCategory) {
+  const data = await searchEbay(searchTerm, token, { useCategory });
   const items = data.itemSummaries || [];
-  const rows = [];
-
+ 
+  const verified = [];
+  const debugCandidates = [];
+ 
   for (const item of items) {
-    if (!isRelevantListing(item.title, card)) continue; // reject unverified matches outright
-
-    const priceInfo = item.price || {};
-    const price = parseFloat(priceInfo.value);
-    if (!price || price <= 0) continue;
-
-    let shipping = 0;
-    const opts = item.shippingOptions || [];
-    if (opts.length && opts[0].shippingCost) {
-      shipping = parseFloat(opts[0].shippingCost.value || 0);
+    const check = checkListing(item.title, card);
+    if (check.ok) {
+      const row = scoreListing(item, predictedValue);
+      if (row) verified.push(row);
     }
-    const total = price + shipping;
-
-    // discount vs the model's predicted value (positive = below value)
-    let discount = null;
-    if (predictedValue > 0) {
-      discount = ((predictedValue - total) / predictedValue) * 100;
-    }
-
-    rows.push({
+    debugCandidates.push({
       title: item.title,
-      price: price,
-      shipping: shipping,
-      total_price: parseFloat(total.toFixed(2)),
-      condition: item.condition || "—",
-      url: item.itemWebUrl,
-      image: (item.image || {}).imageUrl || "",
-      discount_percent: discount === null ? null : parseFloat(discount.toFixed(1)),
+      price: (item.price || {}).value ?? null,
+      verified: check.ok,
+      reason: check.reason,
     });
   }
-
-  // sanity floor: still guard against nonsense prices among the verified rows
-  const filtered = rows.filter(r =>
-    predictedValue <= 0 || r.total_price >= predictedValue * 0.15
-  );
-  filtered.sort((a, b) => (b.discount_percent ?? -999) - (a.discount_percent ?? -999));
-  return filtered.slice(0, 3); // top 3 *verified* deals — never backfilled with unverified ones
+ 
+  return { verified, debugCandidates };
 }
-
-// Vercel serverless handler
+ 
 export default async function handler(req, res) {
-  // allow the browser to call this
   res.setHeader("Access-Control-Allow-Origin", "*");
-
+ 
   const query = (req.query.q || "").toString().trim();
   const value = parseFloat(req.query.value || "0");
+  const wantDebug = req.query.debug === "1" || req.query.debug === "true";
   const card = {
     name: query,
     set: (req.query.set || "").toString().trim(),
@@ -228,20 +238,52 @@ export default async function handler(req, res) {
     number: (req.query.number || "").toString().trim(),
     rarity: (req.query.rarity || "").toString().trim(),
   };
-
+ 
   if (!query) {
     return res.status(400).json({ error: "Missing card query (?q=...)" });
   }
-
+ 
   try {
     const token = await getEbayToken();
     const searchTerm = buildSearchQuery(card);
-    const data = await searchEbay(searchTerm, token);
-    const deals = toListings(data, value, card);
-    // cache results at the edge for 10 min so repeat searches are fast & cheap
+ 
+    // Pass 1: narrowed to the Pokémon-singles category.
+    let { verified, debugCandidates } = await runSearch(searchTerm, token, card, value, true);
+    let usedCategoryFallback = false;
+ 
+    // Pass 2 (fallback): if the category filter produced nothing verified,
+    // retry without it. The title-verification step is what actually
+    // guarantees correctness, so dropping the category restriction here
+    // doesn't reopen the wrong-card bug — it just widens the candidate pool
+    // in case the category ID was wrong or the listing was miscategorized.
+    if (!verified.length) {
+      const retry = await runSearch(searchTerm, token, card, value, false);
+      verified = retry.verified;
+      debugCandidates = debugCandidates.concat(retry.debugCandidates);
+      usedCategoryFallback = true;
+    }
+ 
+    // Sanity floor against nonsense prices among the verified rows.
+    const filtered = verified.filter(r => value <= 0 || r.total_price >= value * 0.15);
+    filtered.sort((a, b) => (b.discount_percent ?? -999) - (a.discount_percent ?? -999));
+    const deals = filtered.slice(0, 3);
+ 
     res.setHeader("Cache-Control", "s-maxage=600, stale-while-revalidate");
-    return res.status(200).json({ query: searchTerm, predicted_value: value, deals });
+    const payload = { query: searchTerm, predicted_value: value, deals };
+    if (wantDebug) {
+      payload.debug = {
+        card,
+        searchTerm,
+        usedCategoryFallback,
+        totalCandidates: debugCandidates.length,
+        totalVerified: verified.length,
+        candidates: debugCandidates.slice(0, 25),
+      };
+    }
+    return res.status(200).json(payload);
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+}
   }
 }
