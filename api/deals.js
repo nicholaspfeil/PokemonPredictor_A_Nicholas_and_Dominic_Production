@@ -98,6 +98,8 @@ async function searchEbay(query, token, { useCategory = true } = {}) {
 // ---- Listing verification ----
 function normalize(s) {
   return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // strip accents: "é" -> "e", not a dropped character
     .toLowerCase()
     .replace(/[^a-z0-9\s/]/g, " ")
     .replace(/\s+/g, " ")
@@ -105,6 +107,28 @@ function normalize(s) {
 }
  
 const NAME_STOPWORDS = new Set(["the", "a", "an", "of", "and"]);
+ 
+// "Poké Ball Pattern" and "Master Ball Pattern" (a.k.a. "Poké/Master Ball
+// Reverse Holo") are real, separate print variants of a card that share the
+// exact same name, set, number, AND usually the same nominal rarity as the
+// plain version — the stamp is layered on top, not a different rarity tier.
+// No amount of name/set/number/rarity matching can tell these apart; they
+// have to be checked as their own thing.
+const PATTERN_TERMS = {
+  pokeball: ["poke ball pattern", "pokeball pattern", "poke ball reverse holo", "pokeball reverse holo"],
+  masterball: ["master ball pattern", "masterball pattern", "master ball reverse holo", "masterball reverse holo"],
+};
+ 
+// Looks at the card's variant/rarity text (never its name — "Master Ball"
+// the ACE SPEC item card must not be confused with the "Master Ball"
+// pattern stamp that can appear on OTHER cards) to figure out whether this
+// specific card IS a pattern-stamped print.
+function detectRequiredPattern(card) {
+  const text = normalize(`${card.variant || ""} ${card.rarity || ""}`);
+  if (/master ?ball/.test(text) && /(pattern|reverse holo|stamp)/.test(text)) return "masterball";
+  if (/poke ?ball/.test(text) && /(pattern|reverse holo|stamp)/.test(text)) return "pokeball";
+  return null;
+}
  
 const NON_SINGLE_CARD_TERMS = [
   "plush", "plushie", "figure", "funko", "pop!", "keychain", "key chain",
@@ -135,6 +159,23 @@ function checkListing(title, card) {
  
   const missingName = nameTokens.find(tok => !wordPresent(t, tok));
   if (missingName) return { ok: false, reason: `title missing name word "${missingName}"` };
+ 
+  // Pattern-stamp gate: reject any mismatch between what this card IS
+  // (plain print vs. Poké Ball pattern vs. Master Ball pattern) and what
+  // the listing title says it is — regardless of how well name/set/number
+  // otherwise match, since those fields are identical across the variants.
+  const requiredPattern = detectRequiredPattern(card);
+  const titleHasPokeball = PATTERN_TERMS.pokeball.some(p => t.includes(normalize(p)));
+  const titleHasMasterball = PATTERN_TERMS.masterball.some(p => t.includes(normalize(p)));
+  if (requiredPattern === "pokeball" && !titleHasPokeball) {
+    return { ok: false, reason: "card is the Poké Ball pattern print, but title doesn't mention it (likely the plain version)" };
+  }
+  if (requiredPattern === "masterball" && !titleHasMasterball) {
+    return { ok: false, reason: "card is the Master Ball pattern print, but title doesn't mention it (likely the plain or Poké Ball pattern version)" };
+  }
+  if (!requiredPattern && (titleHasPokeball || titleHasMasterball)) {
+    return { ok: false, reason: "title is a Poké Ball/Master Ball pattern print, but this card isn't that variant" };
+  }
  
   // Identifiers checked word-by-word (not as one exact phrase) so different
   // word order or punctuation in the title doesn't cause a false rejection.
@@ -271,6 +312,7 @@ export default async function handler(req, res) {
     setCode: (req.query.set_code || "").toString().trim(),
     number: (req.query.number || "").toString().trim(),
     rarity: (req.query.rarity || "").toString().trim(),
+    variant: (req.query.variant || "").toString().trim(),
   };
  
   if (!query) {
